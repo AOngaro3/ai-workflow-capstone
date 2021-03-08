@@ -186,23 +186,6 @@ def df_to_model(mode="training"):
     
     return result_df
 
-def evaluate_model(model, X_test, y_test, plot_eval, plot_avg_threshold=np.inf):
-    test_predictions = model.predict(X_test)
-
-    test_mae = round(mean_absolute_error(test_predictions, y_test), 2)
-    test_rmse = round(mean_squared_error(test_predictions, y_test, squared=False), 2)
-    test_avg = round(np.mean([test_mae, test_rmse]), 2)
-
-    if (plot_eval is True) & (test_avg < plot_avg_threshold):
-        fig, ax = plt.subplots(1, 1, figsize=(14, 6))
-        title = f"{model.named_steps} \n test_mae: {test_mae}, test_rmse:{test_rmse}, test_avg:{test_avg}"
-        ax.set_title(title)
-        ax.plot(test_predictions, label="pred")
-        ax.plot(y_test, label="true")
-        ax.legend()
-        plt.show(block=False)
-
-    return test_mae, test_rmse, test_avg
 
 def split_train_test(df, training_perc=0.8, hm_days=30, verbose=0):
     first_date_training = df.index.min()
@@ -244,60 +227,6 @@ def create_train_test():
 
 
 
-
-def find_best_model(scaler, algorithm, X_train, y_train, cv=5, verbose=0):
-    assert scaler in ("standard", "minmax", None), "scaler must be either None or one of 'standard', 'minmax'."
-
-    assert algorithm in ("xgboost", "random_forest"), "algorithm must be 'random_forest' or 'mlp'."
-
-    if algorithm == "xgboost":
-        alg = XGBRegressor()
-
-        param_grid = {
-            'alg__learning_rate': [0.1, 0.05, 0.001]
-        }
-    elif algorithm == "random_forest":
-        alg = RandomForestRegressor()
-
-        param_grid = {
-            'alg__n_estimators': [50, 100, 200, 500],
-            'alg__criterion': ["mse", "mae"]
-        }
-
-    if scaler is not None:
-        if scaler == "standard":
-            scaler = StandardScaler()
-        elif scaler == "minmax":
-            scaler = MinMaxScaler()
-        pipe = Pipeline([('scaler', scaler), ('alg', alg)])
-    else:
-        pipe = Pipeline([('alg', alg)])
-
-    # Parameters of pipelines can be set using ‘__’ separated parameter names:
-    search = GridSearchCV(pipe, param_grid, n_jobs=-1, cv=cv, verbose=verbose)
-
-    search.fit(X_train, y_train)
-
-    if verbose > 0:
-        print("Best parameter (CV score = %0.3f):" % search.best_score_)
-        print(search.best_params_)
-
-    model = search.best_estimator_
-
-    return model
-
-def build_and_eval_supervised_model(scaler="standard",
-                                    algorithm="xgboost", cv=5, plot_eval=False, plot_avg_threshold=np.inf,
-                                    verbose=0):
-    X, y, X_train, y_train, X_test, y_test = create_train_test()
-
-    model = find_best_model(scaler, algorithm, X_train, y_train, cv, verbose)
-
-    model.fit(X, y)
-
-    test_mae, test_rmse, test_avg = evaluate_model(model, X_test, y_test, plot_eval, plot_avg_threshold)
-
-    return model, test_mae, test_rmse, test_avg
 
 
 if __name__ == "__main__":
