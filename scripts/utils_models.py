@@ -1,6 +1,8 @@
 
 import os
 import sys
+import joblib
+import json
 import re
 import shutil
 import time
@@ -14,7 +16,7 @@ import matplotlib.dates as mdates
 from pandas.plotting import register_matplotlib_converters
 from pandas_profiling import ProfileReport
 
-from .utils_data import *
+from scripts.utils_data import *
 
 
 from xgboost import XGBRegressor
@@ -24,6 +26,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import ParameterGrid, GridSearchCV
+from sklearn.decomposition import PCA
+
 
 
 register_matplotlib_converters()
@@ -34,6 +38,8 @@ ROOT_DIR = Path(__file__).parent.parent
 
 RAW_DATA_URL = "https://raw.githubusercontent.com/aavail/ai-workflow-capstone/master/"
 DATA_DIR = os.path.join(ROOT_DIR, "data", "datasets")
+
+MODEL_DIR = os.path.join(ROOT_DIR, "data", "models")
 
 def _read_and_clean(t = "training"):
     
@@ -177,14 +183,20 @@ def supervised_features_and_target(df,hw_days=30):
     return result_df
     
     
-def df_to_model(mode="training"):
+def df_to_model(mode="training",country=None):
     df, country_ts, ts_tot = _read_and_clean(t = mode)
     
-    ts_tot = ts_tot.drop("year_month",axis=1)
+    if country == None:
+        ts_tot = ts_tot.drop("year_month",axis=1)
     
-    result_df = supervised_features_and_target(ts_tot)
+        result_df = supervised_features_and_target(ts_tot)
+    else: 
+        assert country in ('United Kingdom','EIRE','Germany','France','Norway','Spain','Hong Kong','Portugal','Singapore','Netherlands'), "country must be one of the top 10"
+        country_ts = country_ts.drop(["year_month","country"],axis=1)
+        result_df = supervised_features_and_target(ts_tot)
     
-    return result_df
+    
+    return result_df.dropna()
 
 
 def split_train_test(df, training_perc=0.8, hm_days=30, verbose=0):
@@ -217,35 +229,212 @@ def split_train_test(df, training_perc=0.8, hm_days=30, verbose=0):
     return X, y, X_train, y_train, X_test, y_test
 
 
-def create_train_test():
+def create_train_test(country=None):
     
-    sup_df = df_to_model("training")
+    sup_df = df_to_model("training",country=country)
 
     X, y, X_train, y_train, X_test, y_test = split_train_test(sup_df)
 
     return X, y, X_train, y_train, X_test, y_test
 
+def create_pipe(X_train, y_train,model,scaler,pca,cv=5,mode="test"):
+    
+    if scaler == "Standard":
+        scaler = StandardScaler()
+    
+    if model == "XGBoost":
+        model = XGBRegressor()
+        param_grid = {
+            'model__n_estimators': [50, 100, 200, 500],
+            'model__learning_rate': [0.01, 0.05,0.1],
+        }
+    elif model == "RandomForest":
+        model = RandomForestRegressor()
+        param_grid = {
+            'model__n_estimators': [50, 100, 200, 500],
+            'model__criterion': ["mse", "mae"],
+        }
+    
+    if pca:
+        pipe = Pipeline([('scaler', scaler),("PCA",PCA(n_components=4)), ('model', model)])
+    else:
+        pipe = Pipeline([('scaler', scaler), ('model', model)])
+        
+    search = GridSearchCV(pipe, param_grid, n_jobs=-1, cv=cv)
+    
+    search.fit(X_train, y_train)
+    
+    pipe = search.best_estimator_
+    
+    #print("Best parameter (CV score = %0.3f):" % search.best_score_)
+    #print(search.best_params_)
+    
+    pipe.fit(X_train, y_train)
+    
+    return pipe
+    
 
+    
+def evaluate_pipe(pipe, X_test, y_test, plot_eval, plot_avg_threshold=np.inf):
+    test_predictions = pipe.predict(X_test)
 
+    test_mae = round(mean_absolute_error(test_predictions, y_test), 2)
+    test_rmse = round(mean_squared_error(test_predictions, y_test, squared=False), 2)
+    test_avg = round(np.mean([test_mae, test_rmse]), 2)
+
+    if (plot_eval is True) & (test_avg < plot_avg_threshold):
+        fig, ax = plt.subplots(1, 1, figsize=(14, 6))
+        title = f"{pipe.steps} \n test_mae: {test_mae}, test_rmse:{test_rmse}, test_avg:{test_avg}"
+        ax.set_title(title)
+        ax.plot(test_predictions, label="pred")
+        ax.plot(y_test, label="true")
+        ax.legend()
+        plt.show(block=False)
+
+    return test_mae, test_rmse, test_avg
+
+def find_best_model(plot=False,printt=False,ret=False,country=None):
+    
+    X, y, X_train, y_train, X_test, y_test = create_train_test(country=country)
+    mae_rif = 1000000000000
+    diz_pipe = {"pca":True,"model":"","mae":mae_rif}
+    for j in [True,False]:
+        for i in ["XGBoost","RandomForest"]:
+            pipe = create_pipe(X_train,y_train,i,"Standard",j)
+            test_mae, test_rmse, test_avg= evaluate_pipe(pipe,X_test, y_test, plot_eval=plot)
+            if printt:
+                print(f"Model:{i},Scaler:{j}: mae:{test_mae},rmse:{test_rmse}")
+            if test_mae<mae_rif:
+                mae_rif = test_mae
+                diz_pipe["pca"] = j
+                diz_pipe["model"] = i
+                diz_pipe["mae"] = test_mae
+    if ret == True:
+        return X, y, diz_pipe, pipe
+                
+
+def train_model(country, test=False):
+
+    start_time = time.time()
+
+    if country == "null":
+        country = None
+
+    X,y,diz_pipe,pipe = find_best_model(plot=False,printt=False,ret=True)
+    
+    model = create_pipe(X,y,diz_pipe["model"],"Standard",diz_pipe["pca"])
+    
+    best_mae = diz_pipe["mae"]
+    print(f"Best score on test set: {best_mae}")
+    best_params = model.get_params
+    model_type = diz_pipe["model"]
+
+    model_name = f"supervised_model_{model_type}_{country}"
+    #params = model.params
+    
+    if test is False:
+        model_name = save_model(model,best_params, model_name,test)
+    else:
+        model_name = save_model(model,best_params, model_name,test)
+
+    end_time = time.time()
+    runtime = end_time-start_time
+
+    #update_train_log(best_params, diz_pipe["mae"], runtime, model_version, test)
+
+    return model_name
+
+def model_predict(starting_dates, model, test=False, mode="test"):
+
+    
+    start_time = time.time()
+
+    df = df_to_model(mode="training",country=None) 
+    
+    starting_dates = [pd.Timestamp(sd) for sd in starting_dates]
+
+    if any(sd not in df.index for sd in starting_dates):
+        start = df.index.min().strftime("%Y-%m-%d")
+        end = df.index.max().strftime("%Y-%m-%d")
+        raise KeyError(f"Acceptables dates range from {start} to {end}.")
+
+    predictions = []
+    for sd in starting_dates:
+        x = df.drop("target",axis=1).loc[sd].values
+        x = x.reshape(1, -1)
+        prediction = model.predict(x)
+        predictions.append(prediction)
+
+    end_time = time.time()
+    runtime = end_time - start_time
+
+    #update_predict_log(predictions, starting_dates, runtime, model_version, test)
+
+    return predictions
+
+    
+    
+def save_model(model,model_params,model_name,test):
+      
+    # find the model version name
+    all_files_in_models = os.listdir(MODEL_DIR)
+    all_model_names = [file.replace(".joblib", "") for file in all_files_in_models if file.endswith(".joblib")]
+    version_numbers = [int(_model_name.split("_")[-1]) for _model_name in all_model_names]
+    if len(version_numbers) == 0:
+        new_version_number = "0"
+    else:
+        new_version_number = str(max(version_numbers) + 1)
+    
+    if test:
+        model_name = "TEST_"+model_name + "_" + new_version_number
+    else:
+        model_name = model_name + "_" + new_version_number
+
+    model_saving_path = os.path.join(MODEL_DIR, model_name + ".joblib")
+    params_saving_path = os.path.join(MODEL_DIR, model_name + ".json")
+    
+    joblib.dump(model, model_saving_path)
+
+    # save model params
+    #with open(params_saving_path, 'w') as f:
+    #    json.dump(model_params, f)
+
+    print(f"Model saved in {MODEL_DIR}.")
+    
+    return model_name
+
+def load_model(model_name=None, country_name=None):
+
+    model_name = model_name.replace(".joblib", "")
+    model_loading_path = os.path.join(MODEL_DIR, model_name + ".joblib")
+
+    # load model
+    loaded_model = joblib.load(model_loading_path)
+
+    return loaded_model, model_name
 
 
 if __name__ == "__main__":
+    """
+    basic test procedure for model.py
+    """
+    ## train the model
+    print("TRAINING MODELS")
+    DATA_DIR = os.path.join(ROOT_DIR, "data", "datasets")
+    MODEL_DIR = os.path.join(ROOT_DIR, "data", "models")
 
-    run_start = time.time() 
+    model_name = train_model(country=None,test=True)
+
+    ## load the model
+    print("LOADING MODELS")
+    loaded_model, model_name = load_model(model_name=model_name)
+    print("... models loaded:")
+
+    ## test predict    
+    country = None
+    param_dim = "small"
+    testing_dates = ["2018-01-25"]
     
-    # = os.path.join("..","data","cs-train")
-    print("...fetching data")
-
-    df_train = fetch_data(RAW_DATA_URL,train=True)
-    prod_df = fetch_data(RAW_DATA_URL,train=False)
-
-    df_train.to_csv(os.path.join(DATA_DIR, "df_training.csv"), index=False)
-    prod_df.to_csv(os.path.join(DATA_DIR, "df_production.csv"), index=False)
-    
-    #ts_all = fetch_ts(DATA_DIR,clean=False)
-    m, s = divmod(time.time()-run_start,60)
-    h, m = divmod(m, 60)
-    print("load time:", "%d:%02d:%02d"%(h, m, s))
-
-    #for key,item in ts_all.items():
-    #    print(key,item.shape)
+    print(f"Testing the model on {testing_dates}")
+    prediction = model_predict(testing_dates, model=loaded_model,test=True)
+    print(prediction)
