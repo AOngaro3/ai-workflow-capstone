@@ -6,9 +6,15 @@ import numpy as np
 import pandas as pd
 
 from scripts.utils_models import load_model, model_predict, train_model
-from scripts import ROOT_DIR, AVAILABLE_COUNTRIES
+#from scripts import ROOT_DIR, AVAILABLE_COUNTRIES
+from pathlib import Path
+#from scripts import ROOT_DIR
+ROOT_DIR = Path(__file__).parent.parent
 
 LOG_DIR = os.path.join(ROOT_DIR, "logs")
+
+AVAILABLE_COUNTRIES = ['United Kingdom', 'Portugal', 'Germany', 'EIRE', 'France',
+                       'Netherlands', 'Spain', 'Norway', 'Hong Kong', 'Singapore', None]
 
 app = Flask(__name__)
 
@@ -65,12 +71,12 @@ def predict():
     query = request.json['query'][0]
 
     try:
-        model, model_name = load_model(country_name=query['country'])
+        model, model_name,version = load_model(country_name=query['country'])
     except FileNotFoundError:
         print("ERROR: no model is available for this country. Train a model and retry.")
         return jsonify([])
 
-    _result = score_model(query['starting_dates'], model_name)
+    _result = model_predict(query['starting_dates'],version, model)
     result = []
 
     # convert numpy objects to ensure they are serializable
@@ -86,6 +92,7 @@ def predict():
 @app.route('/train', methods=['GET', 'POST'])
 def train():
 
+    
     # check for request data
     if not request.json:
         print("ERROR: API (train): did not receive request data.")
@@ -97,11 +104,13 @@ def train():
 
     if 'country' not in request.json['query'][0]:
         print("ERROR API (train): missing 'country' field in query.")
+        print(request.json['query'][0])
         return jsonify([])
 
     if request.json["query"][0]["country"] not in AVAILABLE_COUNTRIES:
         print("ERROR API (predict): acceptable countries are", *AVAILABLE_COUNTRIES)
         return jsonify([])
+    
 
     query = request.json['query'][0]
 
@@ -109,7 +118,7 @@ def train():
     if test is None:
         test = False
 
-    model = train_model(query['country'], query.get('param_dim'), test)
+    model = train_model(query['country'], test)
     print("... training complete")
 
     return jsonify(True)

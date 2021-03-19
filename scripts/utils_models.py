@@ -16,7 +16,9 @@ import matplotlib.dates as mdates
 from pandas.plotting import register_matplotlib_converters
 from pandas_profiling import ProfileReport
 
+
 from scripts.utils_data import *
+from scripts.logger import *
 
 
 from xgboost import XGBRegressor
@@ -36,7 +38,10 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).parent.parent
 
+sys.path.append(os.path.abspath(ROOT_DIR))
+
 RAW_DATA_URL = "https://raw.githubusercontent.com/aavail/ai-workflow-capstone/master/"
+
 DATA_DIR = os.path.join(ROOT_DIR, "data", "datasets")
 
 MODEL_DIR = os.path.join(ROOT_DIR, "data", "models")
@@ -46,7 +51,7 @@ def _read_and_clean(t = "training"):
     assert t in ("training","production"), "t must be training or production"
     
     if t == "training":
-        train_data = pd.read_csv("./data/datasets/df_training.csv")
+        train_data = pd.read_csv(DATA_DIR+"/df_training.csv")
 
         train_data = train_data[train_data["price"] >= 0]
         
@@ -56,7 +61,7 @@ def _read_and_clean(t = "training"):
         
     else: 
         
-        prod_data = pd.read_csv("./data/datasets/df_production.csv")
+        prod_data = pd.read_csv(DATA_DIR+"/df_production.csv")
 
         prod_data = prod_data[prod_data["price"] >= 0]
         
@@ -333,23 +338,23 @@ def train_model(country, test=False):
     #params = model.params
     
     if test is False:
-        model_name = save_model(model,best_params, model_name,test)
+        model_name,version = save_model(model,best_params, model_name,test)
     else:
-        model_name = save_model(model,best_params, model_name,test)
+        model_name,version = save_model(model,best_params, model_name,test)
 
     end_time = time.time()
     runtime = end_time-start_time
 
-    #update_train_log(best_params, diz_pipe["mae"], runtime, model_version, test)
+    update_train_log(diz_pipe["mae"], runtime, version, test)
 
     return model_name
 
-def model_predict(starting_dates, model, test=False, mode="test"):
+def model_predict(starting_dates,model_version, model, test=False, mode="test",modality = "training"):
 
     
     start_time = time.time()
 
-    df = df_to_model(mode="training",country=None) 
+    df = df_to_model(mode=modality,country=None) 
     
     starting_dates = [pd.Timestamp(sd) for sd in starting_dates]
 
@@ -368,7 +373,7 @@ def model_predict(starting_dates, model, test=False, mode="test"):
     end_time = time.time()
     runtime = end_time - start_time
 
-    #update_predict_log(predictions, starting_dates, runtime, model_version, test)
+    update_predict_log(predictions, starting_dates, runtime, model_version, test)
 
     return predictions
 
@@ -401,17 +406,36 @@ def save_model(model,model_params,model_name,test):
 
     print(f"Model saved in {MODEL_DIR}.")
     
-    return model_name
+    return model_name, new_version_number
 
 def load_model(model_name=None, country_name=None):
+    if model_name == None:
+        model_name = find_last_model(country_name)
 
     model_name = model_name.replace(".joblib", "")
     model_loading_path = os.path.join(MODEL_DIR, model_name + ".joblib")
 
+    model_version = model_name.replace(".joblib", "").split("_")[-1]
     # load model
     loaded_model = joblib.load(model_loading_path)
 
-    return loaded_model, model_name
+
+    return loaded_model, model_name, model_version
+
+def find_last_model(country_name):
+
+    if country_name is None:
+        country_name = "None"
+
+    all_files_in_models = os.listdir(MODEL_DIR)
+    all_models = [file for file in all_files_in_models if (file.endswith(".joblib") and country_name in file)]
+    all_models = sorted(all_models, key=lambda x: int(x.replace(".joblib", "").split("_")[-1]))
+
+    if len(all_models) == 0:
+        raise FileNotFoundError
+
+    best_model_name = all_models[-1]
+    return best_model_name
 
 
 if __name__ == "__main__":
@@ -427,7 +451,7 @@ if __name__ == "__main__":
 
     ## load the model
     print("LOADING MODELS")
-    loaded_model, model_name = load_model(model_name=model_name)
+    loaded_model, model_name, model_version = load_model(model_name=model_name)
     print("... models loaded:")
 
     ## test predict    
@@ -436,5 +460,5 @@ if __name__ == "__main__":
     testing_dates = ["2018-01-25"]
     
     print(f"Testing the model on {testing_dates}")
-    prediction = model_predict(testing_dates, model=loaded_model,test=True)
+    prediction = model_predict(testing_dates,model_version=model_version, model=loaded_model,test=True)
     print(prediction)

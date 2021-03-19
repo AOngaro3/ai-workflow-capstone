@@ -32,7 +32,6 @@ def test_01_train():
     """
 
     request_json = {"query": [{"country": None,
-                               "param_dim": "very_small",
                                "test": True}]}
     r = requests.post(f'{host}:{port}/train', json=request_json)
     train_complete = re.sub(r"\W+", "", r.text)
